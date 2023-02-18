@@ -1,0 +1,30 @@
+# Template used to create this container: /usr/share/lxc/templates/lxc-download
+# Parameters passed to the template:
+# Template script checksum (SHA-1): 273c51343604eb85f7e294c8da0a5eb769d648f3
+# For additional config options, please look at lxc.container.conf(5)
+
+# Uncomment the following line to support nesting containers:
+#lxc.include = /usr/share/lxc/config/nesting.conf
+# (Be aware this has security implications)
+
+
+# Distribution configuration
+lxc.include = /usr/share/lxc/config/common.conf
+lxc.arch = linux64
+
+# Container specific configuration
+lxc.apparmor.profile = unconfined
+lxc.rootfs.path = dir:/var/lib/lxc/c1/rootfs
+lxc.uts.name = c1
+
+# Network configuration
+lxc.net.0.type = veth
+lxc.net.0.link = lxcbr0
+lxc.net.0.flags = up
+lxc.net.0.hwaddr = 00:16:3e:5d:26:3e
+
+# into /var/lib/lxc/<CONTAINER NAME>/config
+# criu hax
+lxc.console.path = none
+lxc.tty.max = 0
+lxc.cgroup.devices.deny = c 5:1 rwm

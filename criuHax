@@ -1,0 +1,5 @@
+# into /var/lib/lxc/<CONTAINER NAME>/config
+# criu hax
+lxc.console.path = none
+lxc.tty.max = 0
+lxc.cgroup.devices.deny = c 5:1 rwm
