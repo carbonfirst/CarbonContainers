@@ -13,6 +13,7 @@ from multiprocessing import Process, Queue
 
 from daemon3x import daemon
 
+
 # import daemon
 # import lockfile
 
@@ -26,7 +27,15 @@ class LXC_C_Daemon(daemon):
 
     def __init__(self, pidfile):
         self.conts = {}
+        
         super().__init__(pidfile)
+        host = ["hostname", "-I"]
+
+        hosts = subprocess.Popen(host, stdout=subprocess.PIPE).communicate()[0]
+
+        hosts = hosts.split()
+
+        self.host = hosts[1]
         
     
     def run(self):
@@ -34,6 +43,7 @@ class LXC_C_Daemon(daemon):
             t1 = threading.Timer(1.0, self.check_carbon)
             t2 = threading.Timer(1.0, self.listen)
             t3 = threading.Timer(1.0, self.procMonitor)
+            t4 = threading.Timer(1.0, self.migrate_recv)
 
             t1.start()
             t2.start()
@@ -140,20 +150,34 @@ class LXC_C_Daemon(daemon):
                 contSetts["status"] = "running"
                 pass
 
-            elif carb > int(contSetts["threshold"]):
-                with open("/users/jthiede/elif.test", "w") as f:
-                    f.write("hello")
-                if contSetts["policy"] == "wait":
+            if contSetts["policy"] == "wait":
+                if carb > int(contSetts["threshold"]):
+                    
                     # Suspend container
                     command = ["lxc-freeze", "-n", str(contName)]
                     
                     subprocess.Popen(command).communicate()
                     contSetts["status"] = "frozen"
                     pass
-                pass
+                
+            if contSetts["policy"] == migrate:
+                if carb > contSetts["threshold"]:
+                    pass
+                    target = self.migrate_target(True)
 
-            else:
-                pass
+                    if target == "none":
+                        return
+                    
+                    self.migrate_send(contName=contName, target=target)
+                
+                elif carb < contSetts["threshold"]*config.SCALEUP_THRESH:
+                    target = self.migrate_target(False)
+
+                    if target == "none":
+                        return
+                    
+                    self.migrate_send(contName=contName, target=target)
+        
         except Exception as ex:
             with open(config.WORKING_DIR + "/excep.log", "w") as f:
                 f.write(str(ex))
@@ -306,6 +330,148 @@ class LXC_C_Daemon(daemon):
                 f.write(str(ex))
 
 
+    def migrate_target(self, scale_down):
+
+        cur_cpu = 0
+        cur_mem = 0
+        for m in config.MIGRATION_MACHINES:
+            if m["host"]  == self.host:
+                cur_cpu = m["cpu"]
+                cur_mem = m["memGB"]
+    
+            
+            
+        for m in config.MIGRATION_MACHINES:
+            if m["host"] in self.host:
+                continue
+            else:
+                if scale_down and m["cpu"] < cur_cpu  :
+                    return m["host"]
+            
+                if not(scale_down) and m["cpu"] > cur_cpu:
+                    return m["host"]
+        
+        return "none"
+        pass
+
+    # Migration Policy: Send to target machine
+    def migrate_send(self, contName, target):
+
+        if os.path.exists(config.WORKING_DIR + "/checkpoint_"+str(contName)):
+            os.rmdir(config.WORKING_DIR + "/checkpoint_"+str(contName))
+
+        print("Make check dir")
+        #os.mkdir(config.WORKING_DIR + "/checkpoint_"+str(contName))
+        os.mkdir("/var/lib/lxc/"+str(contName)+"/check")
+
+        print("lxc-check")
+        checkpoint = ["lxc-checkpoint", "-s", "-D", "/var/lib/lxc/"+str(contName)+"/check", "-n", contName]
+        subprocess.Popen(checkpoint).communicate()
+
+        print("Copy Container Dict")
+        copyContDir = ["cp", "-r", "/var/lib/lxc/"+str(contName), config.WORKING_DIR]
+        subprocess.Popen(copyContDir).communicate()
+
+        #print("Move Check into container dir")
+        #move = ["mv", config.WORKING_DIR + "/checkpoint_"+str(contName), config.WORKING_DIR + "/" + str(contName) ]
+        #subprocess.Popen(move).communicate()
+
+
+
+        #print("tar container fs")
+        #tarCont = ["tar", "--numeric-owner", "-czvf", str(contName)+".tar.gz", "./*"]
+        #subprocess.Popen(tarCont).communicate()
+
+        print("zip")
+        zipCont = ["zip", "-r", str(contName)+".zip", str(contName)]
+        subprocess.Popen(zipCont).communicate()
+    
+        
+        print("scp filesystem")
+        scp = ["scp", str(contName) + ".zip", config.SSH_USER+"@"+target+":/var/lib/lxc"]
+        subprocess.Popen(scp).communicate()
+        
+        os.chdir(config.WORKING_DIR)
+
+        print("destroy old")
+        destroyOldCont = ["lxc-destroy", str(contName)]
+        subprocess.Popen(destroyOldCont).communicate()
+        rm1 = ["rm", "-r", str(contName)]
+        rm2 = ["rm", str(contName)+".zip"]
+        subprocess.Popen(rm1).communicate()
+        subprocess.Popen(rm2).communicate()
+
+        # self.conts[contName]["status"] = "remote @ " + str(target)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect( (target, config.MIGRATION_PORT) )
+            encode = json.dumps({contName: self.conts[contName]}).encode("utf-8")
+            s.sendall(encode)
+
+
+        pass
+
+
+    # def migrate_recv(self):
+    #     while True:
+    #         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        
+    #             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    #             s.bind( (self.host, config.MIGRATION_PORT) )
+    #             s.listen(1)
+    #             conn, addr = s.accept()
+
+    #             with conn:
+    #                 data = conn.recv(2048)
+    #                 cont = json.loads(data.decode("utf-8"))
+
+    #                 name = list(cont.keys())[0]
+
+
+    #                 untar = ["tar", "--numeric-owner", "-cvf", "/var/lib/lxc/"+str(name)+".tar", "/var/lib/lxc"]
+    #                 subprocess.Popen(untar).communicate()
+
+    #                 restart = ["lxc-checkpoint", "-r", "-D", "/var/lib/lxc/"+str(name)+"/checkpoint_"+str(name)]
+    #                 subprocess.Popen(restart).communicate()
+    #                 # self.conts[cont[""]]
+
+    def migrate_recv(self):
+        while True:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind( (self.host, config.MIGRATION_PORT) )
+                # print("listening")
+                s.listen(1)
+                conn, addr = s.accept()
+                with conn:
+                    data = conn.recv(2048)
+                    cont = json.loads(data.decode("utf-8"))
+
+                    name = list(cont.keys())[0]
+
+                    # print("unzip")
+                    unzip = ["unzip", "/var/lib/lxc/"+str(name)+".zip"]
+                    subprocess.Popen(unzip).communicate()
+
+                    # print("relocate")
+                    move = ["mv", str(name), "/var/lib/lxc"]
+                    subprocess.Popen(move).communicate()
+
+                    # print("restore")
+                    restart = ["lxc-checkpoint", "-r", "-D", "/var/lib/lxc/"+str(name)+"/check", "-n", str(name)]
+                    subprocess.Popen(restart).communicate()
+                    # self.conts[cont[""]]
+
+                    # print("cleanup")
+                    cleanup1 = ["rm", "/var/lib/lxc/"+str(name)+".zip"]
+                    cleanup2 = ["rm", "-r", "/var/lib/lxc/"+str(name)+"/check"]
+
+                    subprocess.Popen(cleanup1).communicate()
+                    subprocess.Popen(cleanup2).communicate()
+
+                    self.conts[name] = cont[name]
+
 # # t1 = threading.Timer(1.0, check_carbon)
 # t2 = threading.Timer(1.0, listen)
 
@@ -322,6 +488,7 @@ class LXC_C_Daemon(daemon):
 
 
 if __name__ == "__main__":
+    
     d = LXC_C_Daemon(config.WORKING_DIR + "/daemon.pid")
 
     if sys.argv[1] == "start":
