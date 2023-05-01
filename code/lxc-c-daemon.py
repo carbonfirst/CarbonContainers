@@ -22,6 +22,9 @@ import config
 
 events = ["task-clock", "context-switches", "cpu-migrations", "page-faults", "cycles", "instructions", "branches", "branch-misses"]        
 
+def mws_to_kwh(n):
+    return n / (3600000000)
+    pass
 
 class LXC_C_Daemon(daemon):
 
@@ -45,7 +48,7 @@ class LXC_C_Daemon(daemon):
             t3 = threading.Timer(1.0, self.procMonitor)
             t4 = threading.Timer(1.0, self.migrate_recv)
 
-            t1.start()
+            # t1.start()
             t2.start()
             t3.start()
 
@@ -160,7 +163,7 @@ class LXC_C_Daemon(daemon):
                     contSetts["status"] = "frozen"
                     pass
                 
-            if contSetts["policy"] == migrate:
+            if contSetts["policy"] == "migrate":
                 if carb > contSetts["threshold"]:
                     pass
                     target = self.migrate_target(True)
@@ -201,9 +204,10 @@ class LXC_C_Daemon(daemon):
     def getPerfEvents(self, pids):
         try:
             q = Queue()
+            q2 = Queue()
             procs = []
             for pid in pids:
-                p = Process(target=self.perfStat, args=(pid,q))
+                p = Process(target=self.perfStat, args=(pid,q, q2))
                 procs.append(p)
                 # print("Launcing proc check " + str(pid))
                 p.start()
@@ -216,9 +220,11 @@ class LXC_C_Daemon(daemon):
 
             # print("DONE")
             containers = {}
+            cpuConts = {}
             for i in range(len(pids)):
                 #print("ITER " + str(i))
                 pid, counters = q.get()
+                pidC, cpu = q2.get()
                 for e in counters:
                     #print(e)
                     if counters[e] == "<not counted>":
@@ -235,15 +241,22 @@ class LXC_C_Daemon(daemon):
                     containers[cont] = newCount
                 else:
                     containers[cont] = counters
+                
+                contC = pids[pidC]
+                if contC in cpuConts:
+                    cpuConts[contC] = cpuConts[contC] + cpu
+                else:
+                    cpuConts[contC] = cpu
             pass
             # print(containers)
-            return containers
+            return containers, cpuConts
         except Exception as ex:
 
             with open(config.WORKING_DIR + "/perfevents_excep.log", "w") as f:
                 f.write(str(ex))
 
-    def perfStat(self,pid,q):
+
+    def perfStat(self,pid,q,cpuQ):
         pass
         try:
             with open(config.WORKING_DIR + "/perfstat.test", "w") as f:
@@ -252,7 +265,13 @@ class LXC_C_Daemon(daemon):
             events = ["task-clock", "context-switches", "cpu-migrations", "page-faults", "cycles", "instructions", "branches", "branch-misses"]
             cmd = ["perf", "stat", "-p", str(pid), "-x", ",", "sleep", "5"]
             out = subprocess.Popen(cmd, stderr=subprocess.PIPE).communicate()[1]
-        
+            #top -b -n 2 -d 0.2 -p 6962 | tail -1 | awk '{print $9}'
+            # top = ["top", "-b", "-n", "0.5", "-p", str(pid)]
+
+            top = "top -b -n 2 -d 0.5 -p" + str(pid) + " | tail -1 | awk '{print $9}'"
+            cpu = subprocess.Popen(top, shell=True, stdout=subprocess.PIPE).communicate()[0]
+            cpu = float(cpu.decode("utf-8").strip())
+            cpuQ.put((pid,cpu))
 
             lines = [l.replace("b'", "").split(",")[0] for l in str(out).split("\\n") if l != "'" ]
             d = dict(zip(events, lines))
@@ -280,11 +299,13 @@ class LXC_C_Daemon(daemon):
                 pred = float(model.predict(feats))
                 # print(pred)
 
-                power = pred - config.BASE_POW
-
-                self.conts[cont]["totals"]["joules_total"] += power * config.UPDATE_PERIOD
+                power_marg = pred - config.BASE_POW
+                power = pred
+                energy = mws_to_kwh(power * config.UPDATE_PERIOD)
+                carb = carbon * power * config.UPDATE_PERIOD
+                self.conts[cont]["totals"]["joules_total"] += energy
                 
-                self.conts[cont]["totals"]["carbon_total"] += carbon * power * config.UPDATE_PERIOD
+                self.conts[cont]["totals"]["carbon_total"] += carb
                 pass
 
         except Exception as ex:
@@ -319,7 +340,7 @@ class LXC_C_Daemon(daemon):
                 os.mkdir(config.WORKING_DIR + "/procOut")   
                 #print(groupMap)
                 # print(groupMap)
-                conts = self.getPerfEvents(groupMap)
+                conts, contsCPU = self.getPerfEvents(groupMap)
 
                 with open(config.WORKING_DIR + "/procMonitor.out", "w") as f:
                     f.write(str(conts))
@@ -388,7 +409,7 @@ class LXC_C_Daemon(daemon):
     
         
         print("scp filesystem")
-        scp = ["scp", str(contName) + ".zip", config.SSH_USER+"@"+target+":/var/lib/lxc"]
+        scp = ["scp", "-i", config.SSH_KEY_PATH, str(contName) + ".zip", config.SSH_USER+"@"+target+":"+config.WORKING_DIR]
         subprocess.Popen(scp).communicate()
         
         os.chdir(config.WORKING_DIR)
@@ -411,30 +432,6 @@ class LXC_C_Daemon(daemon):
 
         pass
 
-
-    # def migrate_recv(self):
-    #     while True:
-    #         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        
-    #             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    #             s.bind( (self.host, config.MIGRATION_PORT) )
-    #             s.listen(1)
-    #             conn, addr = s.accept()
-
-    #             with conn:
-    #                 data = conn.recv(2048)
-    #                 cont = json.loads(data.decode("utf-8"))
-
-    #                 name = list(cont.keys())[0]
-
-
-    #                 untar = ["tar", "--numeric-owner", "-cvf", "/var/lib/lxc/"+str(name)+".tar", "/var/lib/lxc"]
-    #                 subprocess.Popen(untar).communicate()
-
-    #                 restart = ["lxc-checkpoint", "-r", "-D", "/var/lib/lxc/"+str(name)+"/checkpoint_"+str(name)]
-    #                 subprocess.Popen(restart).communicate()
-    #                 # self.conts[cont[""]]
-
     def migrate_recv(self):
         while True:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -451,7 +448,7 @@ class LXC_C_Daemon(daemon):
                     name = list(cont.keys())[0]
 
                     # print("unzip")
-                    unzip = ["unzip", "/var/lib/lxc/"+str(name)+".zip"]
+                    unzip = ["unzip", config.WORKING_DIR+"/"+str(name)+".zip"]
                     subprocess.Popen(unzip).communicate()
 
                     # print("relocate")
@@ -471,21 +468,6 @@ class LXC_C_Daemon(daemon):
                     subprocess.Popen(cleanup2).communicate()
 
                     self.conts[name] = cont[name]
-
-# # t1 = threading.Timer(1.0, check_carbon)
-# t2 = threading.Timer(1.0, listen)
-
-# # t1.start()
-# t2.start()
-
-
-# def main(self):
-#     # t1 = threading.Timer(1.0, check_carbon)
-#     t2 = threading.Timer(1.0, listen)
-
-#     # t1.start()
-#     t2.start()
-
 
 if __name__ == "__main__":
     

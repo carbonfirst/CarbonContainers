@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package records;
+
+service Records{
+    rpc Lookup (LookupRequest) returns (LookupReply){}
+    rpc Update (UpdateRequest) returns (UpdateReply){}
+}
+
+
+message LookupRequest{
+    string name = 1;
+}
+
+message LookupReply{
+    string results = 1;
+}
+
+message UpdateRequest{
+    string name = 1;
+    string value = 2;
+    string setts = 3;
+}
+
+message UpdateReply{
+    string code = 1;
+}
+

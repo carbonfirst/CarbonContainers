@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package front;
+
+service Front {
+    rpc Register (RegisterRequest) returns (RegisterReply) {}
+    rpc Deregister  (DeregisterRequest) returns (DeregisterReply) {}
+    rpc Start (StartRequest) returns (StartReply) {}
+    rpc Stop (StopRequest) returns (StopReply) {}
+    rpc Freeze  (FreezeRequest) returns (FreezeReply) {}
+    rpc Unfreeze  (UnfreezeRequest) returns (UnfreezeReply) {}
+    rpc Status (StatusRequest) returns (StatusReply) {}
+    rpc Policy (PolicyRequest) returns (PolicyReply) {}
+}
+
+
+message RegisterRequest{
+    string name = 1;
+    string policy = 2;
+    string thresh = 3;
+    string status = 4;
+}
+
+message RegisterReply{
+    string code = 1;
+}
+
+message DeregisterRequest{
+    string name = 1;
+}
+
+message DeregisterReply{
+    string code = 1;
+}
+
+message StartRequest{
+    string name = 1;
+}
+
+message StartReply{
+    string code = 1;
+}
+
+message StopRequest{
+    string name = 1;
+}
+
+message StopReply{
+    string code = 1;
+}
+
+message FreezeRequest{
+    string name = 1;
+}
+
+message FreezeReply{
+    string code = 1;
+}
+
+message UnfreezeRequest{
+    string name = 1;
+}
+
+message UnfreezeReply{
+    string code = 1;
+}
+
+message StatusRequest{
+    string name = 1;
+}
+
+message StatusReply{
+    string name = 1;
+    string status = 2;
+}
+
+message PolicyRequest{
+    string name = 1;
+    string policy = 2;
+    string thresh = 3;
+}
+
+message PolicyReply{
+    string code = 1;
+}
+

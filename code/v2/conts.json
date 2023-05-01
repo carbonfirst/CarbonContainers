@@ -1,0 +1,1 @@
+{"c1": {"name": "c1", "policy": "target", "threshold": "2.0", "status": "migrating", "location": "198.22.255.78", "current": {"carbon": 0.31923960789355216, "joules": 0.9095145524032826, "cpu": 0}, "totals": {"carbon_total": 0.31923960789355216, "joules_total": 0.9095145524032826}}}

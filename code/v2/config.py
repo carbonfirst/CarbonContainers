@@ -3,21 +3,46 @@ CONFIG FILE FOR LXC-C
 '''
 
 
-CO2_SIGNAL_KEY = "co2key.txt"
+CO2_SIGNAL_KEY = "/users/jthiede/co2key.txt"
+
+'''
+FRONT END VALS
+'''
+
+FRONT_IP = "localhost"
+FRONT_PORT = "1994"
 
 
 '''
-LXC-C MONITOR VALUES
+RECORDS
+
+'''
+RECORD_IP = "localhost"
+RECORD_PORT = "1996"
+RECORD_FILE = "./conts.json"
+
+'''
+MONITOR VALUES
 '''
 
-MODEL = "./model.pkl"
-BASE_POW = 100000
+IP = "localhost"
+PORT = "1995"
 
+MODEL = "/users/jthiede/model.pkl"
+MODEL_BASE_POW = 100000
+
+
+'''
+CONTROLLER
+'''
+
+CONTROLLER_PORT = "1997"
 
 '''
 LXC-C DAEMON VALUES
 '''
 WORKING_DIR = "/users/jthiede"
+# WORKING_DIR = "./"
 LOCKFILE = ""
 
 HOST = "localhost"
@@ -26,12 +51,12 @@ PORT = 1994
 
 UPDATE_PERIOD = 30
 
-SSH_KEY_PATH = "./"
+SSH_KEY_PATH = "/users/jthiede/id_rsa"
 SSH_USER = "jthiede"
 
 # MIGRATION_MACHINES = {}
-# MIGRATION_MACHINES = [{"host": "198.22.255.21", "cpu": 40, "memGB": 252 }, {"host": "198.22.255.33", "cpu": 20, "memGB": 126 }]
-MIGRATION_MACHINES = {1: {"host": "198.22.255.33", "cpu": 20, "memGB": 126 }, 2: {"host": "198.22.255.21", "cpu": 40, "memGB": 252 }}
+MIGRATION_MACHINES = {  "198.22.255.16": {"host": "198.22.255.16", "cpu": 2, "memGB": 252, "basepow":100000 },
+                        "198.22.255.78": {"host": "198.22.255.78", "cpu": 4, "memGB": 126, "basepow": 50000 }}
 
 MIGRATION_PORT = 8888
 

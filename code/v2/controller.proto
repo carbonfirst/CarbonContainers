@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package controller;
+
+service Controller{
+    rpc Migrate (MigrateRequest) returns (MigrateReply){}
+    rpc Recieve (RecieveRequest) returns (RecieveReply){}
+}
+
+message MigrateRequest{
+    string conts = 1;
+}
+
+message MigrateReply{
+    string code = 1;
+}
+
+
+message RecieveRequest{
+    string cont = 1;
+}
+
+message RecieveReply{
+    string code = 1;
+}
