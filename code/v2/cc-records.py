@@ -23,7 +23,7 @@ import records_pb2_grpc
 from concurrent import futures
 
 import config
-
+import time
 
 class Records(records_pb2_grpc.RecordsServicer):
 

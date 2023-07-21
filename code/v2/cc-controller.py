@@ -28,6 +28,7 @@ from concurrent import futures
 import config
 import math
 
+
 from threading import Thread
 
 def nextSmaller(current):
@@ -66,6 +67,7 @@ class Controller(controller_pb2_grpc.ControllerServicer):
     def __init__(self, host):
         controller_pb2_grpc.ControllerServicer.__init__(self)
         self.ip = host
+        self.time = 0
         pass
 
     def Migrate(self, request, context):
@@ -105,19 +107,25 @@ class Controller(controller_pb2_grpc.ControllerServicer):
     
     def Recieve(self, request, context):
 
-        cont = json.loads(request.cont)
+        cont = request.cont
         t = Thread(target=self.migrate_recv, args=(cont,))
         t.start()
         return controller_pb2.RecieveReply(code="1")
 
 
     def migration(self):
+        self.time += 1
         if len(self.conts) == 0:
             print("nothing to do")
             return
         for cont in self.conts:
             if self.conts[cont]["policy"].lower() == "none":
+                with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+                    stub = records_pb2_grpc.RecordsStub(c)
+                    resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
                 continue
+          
+            # ENERGY EFFICIENT POLICY
             elif self.conts[cont]["policy"].lower() == "thresh":
                 '''
                 if throttled and below thresh
@@ -132,46 +140,120 @@ class Controller(controller_pb2_grpc.ControllerServicer):
                 carb = self.conts[cont]["current"]["carbon"]
                 thresh = self.conts[cont]["threshold"]
                 curMach = config.MIGRATION_MACHINES[self.conts[cont]["location"]]
+
+                cur_cores = int(self.conts[cont]["cpu_cores"])
+                max_cores = config.MIGRATION_MACHINES[self.conts[cont]["location"]]["cpu"]
+
+                if cur_cores == max_cores:
+                    scale_up = True
+                else:
+                    scale_up = False
+
+                if nextSmaller(curMach["host"]):
+                    next_smaller_cores = config.MIGRATION_MACHINES[nextSmaller(curMach["host"])]["cpu"]
+
+                    # DONT SCALE DOWN IF YOU'LL SCALE TO BELOW THE RESOURCES AT A SMALLER MACHINE; DONT SCALE TO 0
+                    if (int(cur_cores * 0.75) <= next_smaller_cores) or int(cur_cores * 0.75) == 0:
+                        scale_down = False
+                    else: 
+                        scale_down = True
+                else:
+                    next_smaller_cores = "-1"
+                    if int(cur_cores * 0.75) == 0:
+                        scale_down = False
+                    else:
+                        scale_down = True
+                
+                
+                # scale up
                 if cpu == curMach["cpu"]*100 and carb < thresh:
+                    if scale_up:
+                        self.scale_up(cont, cur_cores)
+                        continue
+
                     target = nextBigger(curMach["host"])
                     if target:
                         print("Migrate to " + str(target))
+                        self.migrate_send(cont,target)
                     pass
 
+                # scale down
                 elif carb > thresh:
+                    if scale_down:
+                        self.scale_down(cont, cur_cores)
+                        continue
+                    
+
+
                     target = nextSmaller(curMach["host"])
                     if target:
                         print("Migrate to " + str(target))
                         self.migrate_send(cont,target)
                     pass
                 
-                elif cpu <= (curMach["cpu"] / nextSmaller(curMach["host"]))*100:
+                # # scale down
+                # elif cpu <= (curMach["cpu"] / nextSmaller(curMach["host"]))*100:
+                #     if scale_down:
+                #         self.scale_down(cont, cur_cores)
+                #         with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+                #             stub = records_pb2_grpc.RecordsStub(c)
+                #             resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
+                #         continue
                     
-                    target = nextSmaller(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
+                #     target = nextSmaller(curMach["host"])
+                #     if target:
+                #         print("Migrate to " + str(target))
+                #         self.migrate_send(cont,target)
+                #     pass
                 
+                # no change
+                else:
+                    with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+                        stub = records_pb2_grpc.RecordsStub(c)
+                        resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
                 pass
                 pass
+
+            # HIGH PERFORMANCE POLICY
             elif self.conts[cont]["policy"].lower() == "target":
                 '''
                 if throttled and below target
                     size up
                 elif carbon exceeded
                     size down
+                elif carbon below some parameterized % of target
+                    size up
                 '''
                 cpu = self.conts[cont]["current"]["cpu"]
                 carb = self.conts[cont]["current"]["carbon"]
                 thresh = self.conts[cont]["threshold"]
                 curMach = config.MIGRATION_MACHINES[self.conts[cont]["location"]]
                 
+                cur_cores = int(self.conts[cont]["cpu_cores"])
+                # max_cores = config.MIGRATION_MACHINES[self.conts[cont]["location"]]["cpu"]
+                if nextSmaller(curMach["host"]):
+                    next_smaller_cores = config.MIGRATION_MACHINES[nextSmaller(curMach["host"])]["cpu"]
+
+                    # DONT SCALE DOWN IF YOU'LL SCALE TO BELOW THE RESOURCES AT A SMALLER MACHINE; DONT SCALE TO 0
+                    if (int(cur_cores * 0.75) <= next_smaller_cores) or int(cur_cores * 0.75) == 0:
+                        scale = False
+                    else: 
+                        scale = True
+                else:
+                    next_smaller_cores = "-1"
+                    if int(cur_cores * 0.75) == 0:
+                        scale = False
+                    else:
+                        scale = True
+                
+
                 if cpu == float(curMach["cpu"]*100) and carb < float(thresh):
                     print("SIZE UP")
                     target = nextBigger(curMach["host"])
                     if target:
                         print("Migrate to " + str(target))
                         self.migrate_send(cont,target) 
+
                     pass
 
                 elif carb > float(thresh):
@@ -179,11 +261,26 @@ class Controller(controller_pb2_grpc.ControllerServicer):
                     target = nextSmaller(curMach["host"])
                     if target:
                         print("Migrate to " + str(target))
+                        self.migrate_send(cont,target) 
+
                     pass
 
-                
+                elif carb <= float(thresh) * (1-config.SCALEUP_THRESH):
+                    print("SIZE UP")
+                    target = nextBigger(curMach["host"])
+                    if target:
+                        print("Migrate to " + str(target))
+                        self.migrate_send(cont,target) 
+
+
+                else:
+                    with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+                        stub = records_pb2_grpc.RecordsStub(c)
+                        resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
                 pass
 
+            elif self.conts[cont]["policy"].lower() == "suspend":
+                pass
         pass
     def migrate_target(self,current, scale_down):
         
@@ -197,6 +294,9 @@ class Controller(controller_pb2_grpc.ControllerServicer):
     
 
     def migrate_send(self, contName, target):
+
+        with open (config.M_OUTPUT+"/"+str(self.time)+".txt", "w") as f:
+            f.write(str(target))
 
         if os.path.exists(config.WORKING_DIR + "/checkpoint_"+str(contName)):
             os.rmdir(config.WORKING_DIR + "/checkpoint_"+str(contName))
@@ -219,28 +319,21 @@ class Controller(controller_pb2_grpc.ControllerServicer):
 
 
 
-        #print("tar container fs")
-        #tarCont = ["tar", "--numeric-owner", "-czvf", str(contName)+".tar.gz", "./*"]
-        #subprocess.Popen(tarCont).communicate()
+        print("tar container fs")
+        tarCont = ["tar", "--numeric-owner", "-czvf", config.WORKING_DIR + "/" + str(contName)+".tar.gz", config.WORKING_DIR+"/"+str(contName)]
+        subprocess.Popen(tarCont).communicate()
 
-        print("zip")
-        zipCont = ["zip", "-r", config.WORKING_DIR+"/"+str(contName)+".zip", config.WORKING_DIR+"/"+str(contName)]
-        subprocess.Popen(zipCont).communicate()
+        # print("zip")
+        # zipCont = ["zip", "-r", config.WORKING_DIR+"/"+str(contName)+".zip", config.WORKING_DIR+"/"+str(contName)]
+        # subprocess.Popen(zipCont, stdout=subprocess.PIPE).communicate()
     
         
         print("scp filesystem")
-        scp = ["scp", "-i", config.SSH_KEY_PATH, config.WORKING_DIR+"/"+str(contName) + ".zip", config.SSH_USER+"@"+target+":"+config.WORKING_DIR]
+        scp = ["scp", "-i", config.SSH_KEY_PATH, config.WORKING_DIR+"/"+str(contName) + ".tar.gz", config.SSH_USER+"@"+target+":"+config.WORKING_DIR]
         subprocess.Popen(scp).communicate()
         
         #os.chdir(config.WORKING_DIR)
 
-        print("destroy old")
-        destroyOldCont = ["lxc-destroy", str(contName)]
-        subprocess.Popen(destroyOldCont).communicate()
-        rm1 = ["rm", "-r", config.WORKING_DIR+"/"+str(contName)]
-        rm2 = ["rm", config.WORKING_DIR+"/"+str(contName)+".zip"]
-        subprocess.Popen(rm1).communicate()
-        subprocess.Popen(rm2).communicate()
 
 
         with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
@@ -252,6 +345,13 @@ class Controller(controller_pb2_grpc.ControllerServicer):
             resp = stub.Recieve(controller_pb2.RecieveRequest(cont=contName))
 
     
+        print("destroy old")
+        destroyOldCont = ["lxc-destroy", str(contName)]
+        subprocess.Popen(destroyOldCont).communicate()
+        rm1 = ["rm", "-r", config.WORKING_DIR+"/"+str(contName)]
+        rm2 = ["rm", config.WORKING_DIR+"/"+str(contName)+".tar.gz"]
+        subprocess.Popen(rm1).communicate()
+        subprocess.Popen(rm2).communicate()
         # self.conts[contName]["status"] = "remote @ " + str(target)
 
         # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -279,13 +379,17 @@ class Controller(controller_pb2_grpc.ControllerServicer):
 
                 # name = list(cont.keys())[0]
 
-        print("unzip")
-        unzip = ["unzip", config.WORKING_DIR+"/"+str(name)+".zip", "-d", config.WORKING_DIR ]
-        print(unzip)
-        subprocess.Popen(unzip).communicate()
+        # print("unzip")
+        # unzip = ["unzip", config.WORKING_DIR+"/"+str(name)+".zip", "-d", config.WORKING_DIR ]
+        # print(unzip)
+        # subprocess.Popen(unzip).communicate()
+
+        print("untar")
+        untar = ["tar", "--numeric-owner", config.WORKING_DIR + "/" +str(name)+".tar.gz"]
+        subprocess.Popen(untar).communicate()
 
         print("relocate")
-        move = ["mv", config.WORKING_DIR+config.WORKING_DIR+"/"+str(name), "/var/lib/lxc"]
+        move = ["mv", config.WORKING_DIR+"/var/lib/lxc/"+str(name), "/var/lib/lxc"]
         subprocess.Popen(move).communicate()
 
         print("restore")
@@ -294,9 +398,9 @@ class Controller(controller_pb2_grpc.ControllerServicer):
         # self.conts[cont[""]]
 
         print("cleanup")
-        cleanup1 = ["rm", config.WORKING_DIR+"/"+str(name)+".zip"]
+        cleanup1 = ["rm", config.WORKING_DIR+"/"+str(name)+".tar.gz"]
         cleanup2 = ["rm", "-r", "/var/lib/lxc/"+str(name)+"/check"]
-        cleanup3 = ["rm", "-r", config.WORKING_DIR+"/users"]
+        cleanup3 = ["rm", "-r", config.WORKING_DIR+"/var"]
 
         subprocess.Popen(cleanup1).communicate()
         subprocess.Popen(cleanup2).communicate()
@@ -308,6 +412,44 @@ class Controller(controller_pb2_grpc.ControllerServicer):
         #    stub = records_pb2_grpc.RecordsStub(c)
         #    resp = stub.Update(records_pb2.UpdateRequest(name=contName, value="ALL", setts=))
         # self.conts[name] = cont[name]
+
+
+    def scale_up(self,cont,currentCpu):
+        print("SCALE UP")
+        command = ["lxc-cgroup", "-n", str(cont), "cpuset.cpus", "0-"+str( int(currentCpu * 1.25))]
+        subprocess.Popen(command).communicate()
+        with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+           stub = records_pb2_grpc.RecordsStub(c)
+           resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="cpu_cores", setts=str(int(currentCpu * 1.25))))
+
+        with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+           stub = records_pb2_grpc.RecordsStub(c)
+           resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
+        return int(currentCpu * 1.25)
+        pass
+
+    def scale_down(self,cont,currentCpu):
+        print("SCALE DOWN")
+        command = ["lxc-cgroup", "-n", str(cont), "cpuset.cpus", "0-"+str( int(currentCpu * 0.75))]
+        subprocess.Popen(command).communicate()
+        with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+           stub = records_pb2_grpc.RecordsStub(c)
+           resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="cpu_cores", setts=str(int(currentCpu * 0.75))))
+        
+        with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
+           stub = records_pb2_grpc.RecordsStub(c)
+           resp = stub.Update(records_pb2.UpdateRequest(name=cont, value="status", setts="running"))
+
+        return int(currentCpu * 0.75)
+        pass
+
+
+    def reset_scale(self, cont):
+        cpu = config.MACHINES[str(self.ip)]["cpu"]
+        command = ["lxc-cgroup", "-n", str(cont), "cpuset", "0-"+str(cpu-1)]
+        subprocess.Popen(command).communicate()
+        return cpu
+    
 
 def run(ip, port):
     server = grpc.server(thread_pool=futures.ThreadPoolExecutor(max_workers=5),maximum_concurrent_rpcs=5)

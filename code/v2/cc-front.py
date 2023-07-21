@@ -42,7 +42,15 @@ class Front(front_pb2_grpc.FrontServicer):
         status = request.status.lower()
 
         #newCont = {"name":name, "policy":policy, "threshold":thresh, "status":status, "location": ip, "totals": {"carbon_total": 0, "joules_total": 0}}
-        newCont = {"name":name, "policy":policy, "threshold":thresh, "status":status, "location": ip, "current": {"carbon": 0, "joules":0, "cpu":0}, "totals": {"carbon_total": 0, "joules_total": 0}}
+        newCont = {"name":name, 
+                   "policy":policy, 
+                   "threshold":float(thresh),
+                    "status":status, 
+                    "location": ip, 
+                    "cpu_cores": config.MIGRATION_MACHINES[str(self.ip)]["cpu"],
+                    "current": {"carbon": 0, "joules":0, "cpu":0}, 
+                    "totals": {"carbon_total": 0, "joules_total": 0}
+                    }
         mesg = json.dumps(newCont)
 
         with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:

@@ -73,6 +73,7 @@ class CC_Monitor(daemon):
     def __init__(self, pidfile, host):
         self.conts = {}
         self.ip = str(host).strip()
+        self.time = 0
         super().__init__(pidfile)
         
     
@@ -161,61 +162,64 @@ class CC_Monitor(daemon):
     
 
     def getPerfEvents(self, pids):
-        try:
-            print("GET PERF EVENTS")
-            q = Queue()
-            q2 = Queue()
-            procs = []
-            for pid in pids:
-                p = Process(target=self.perfStat, args=(pid,q, q2))
-                procs.append(p)
-                print("Launcing proc check " + str(pid))
-                p.start()
-            # print(len(procs))
-            for proc in procs:
-                print("Waiting on " + str(proc))
-                proc.join()
-                print("Joined")
+        #try:
+        print("GET PERF EVENTS")
+        q = Queue()
+        q2 = Queue()
+        procs = []
+        for pid in pids:
+            p = Process(target=self.perfStat, args=(pid,q, q2))
+            procs.append(p)
+            print("Launcing proc check " + str(pid))
+            p.start()
+        # print(len(procs))
+        for proc in procs:
+            print("Waiting on " + str(proc))
+            proc.join()
+            print("Joined")
 
 
-            # print("DONE")
-            containers = {}
-            cpuConts = {}
-            for i in range(len(pids)):
-                #print("ITER " + str(i))
-                #print(pid)
-                pid, counters = q.get()
-                pidC, cpu = q2.get()
-                
+        # print("DONE")
+        containers = {}
+        cpuConts = {}
+        for i in range(len(pids)):
+            #print("ITER " + str(i))
+            #print(pid)
+            pid, counters = q.get()
+            pidC, cpu = q2.get()
+            
+            try:
                 for e in counters:
                     #print(e)
                     if counters[e] == "<not counted>":
                         counters[e] = 0.0
                     else:
                         counters[e] = float(counters[e])
-                # print("q.get done")
-                cont = pids[pid]
-                # count = Counter()
-                # print("SUM")
-                if cont in containers:
-                    newSums = [i+j for i,j in zip(list(counters.values()),list(containers[cont].values()))]
-                    newCount = dict(zip(events, newSums))
-                    containers[cont] = newCount
-                else:
-                    containers[cont] = counters
-                
-                contC = pids[pidC]
-                if contC in cpuConts:
-                    cpuConts[contC] = cpuConts[contC] + cpu
-                else:
-                    cpuConts[contC] = cpu
-            pass
-            # print(containers)
-            return containers, cpuConts
-        except Exception as ex:
+            except Exception as ex:
+                continue
+            # print("q.get done")
+            cont = pids[pid]
+            # count = Counter()
+            # print("SUM")
+            if cont in containers:
+                newSums = [i+j for i,j in zip(list(counters.values()),list(containers[cont].values()))]
+                newCount = dict(zip(events, newSums))
+                containers[cont] = newCount
+            else:
+                containers[cont] = counters
+            
+            contC = pids[pidC]
+            if contC in cpuConts:
+                cpuConts[contC] = cpuConts[contC] + cpu
+            else:
+                cpuConts[contC] = cpu
+        pass
+        # print(containers)
+        return containers, cpuConts
+        # except Exception as ex:
 
-            with open(config.WORKING_DIR + "/perfevents_excep.log", "w") as f:
-                f.write(str(ex))
+        #     with open(config.WORKING_DIR + "/perfevents_excep.log", "w") as f:
+        #         f.write(str(ex))
 
 
     def perfStat(self,pid,q,cpuQ):
@@ -248,24 +252,27 @@ class CC_Monitor(daemon):
             with open(config.WORKING_DIR + "/perfstat_excep.log", "w") as f:
                 f.write(str(ex))
 
-    def powerEstimate(self, conts):
+    def powerEstimate(self, conts, procs):
         try:
             with open(config.MODEL, 'rb') as f:
                 model = pickle.load(f)
 
             carbon = config.getCarbonIntensity()
 
+            self.time = self.time + 1
             for cont in conts:
                 print("power est")
                 print(cont)
                 feats = list(conts[cont].values())
+                # get the average counts over 5 seconds (model is trained on 5 second intervals)
+                feats = list(map(lambda x: x / (config.UPDATE_PERIOD / 5), feats))
                 feats = [feats]
                 # print(feats)
                 pred = float(model.predict(feats))
                 # print(pred)
                 print(config.MIGRATION_MACHINES[self.ip]["basepow"])
                 power_marg = (pred - config.MODEL_BASE_POW) + config.MIGRATION_MACHINES[self.ip]["basepow"]
-                power = pred
+                power = pred - (config.MODEL_BASE_POW) + config.MIGRATION_MACHINES[self.ip]["basepow"]
                 energy = mws_to_kwh(power * config.UPDATE_PERIOD)
                 carb = carbon * energy 
                 print("ENERGY KWh")
@@ -283,6 +290,9 @@ class CC_Monitor(daemon):
 
                 self.conts[cont]["current"]["carbon"] = carb
                 self.conts[cont]["current"]["joules"] = energy
+
+                with open(config.OUTPUT+"/"+str(time)+".txt", "w") as f:
+                    f.write(str(carb))
 
                 with grpc.insecure_channel("localhost:" + config.RECORD_PORT) as c:
                     stub = records_pb2_grpc.RecordsStub(c)
@@ -330,7 +340,7 @@ class CC_Monitor(daemon):
             with open(config.WORKING_DIR + "/procMonitor.out", "w") as f:
                 f.write(str(conts))
 
-            self.powerEstimate(conts)
+            self.powerEstimate(conts, len(pids))
             #print(self.conts)
             
             print("CPU cont")
@@ -349,196 +359,7 @@ class CC_Monitor(daemon):
             with open(config.WORKING_DIR + "/procMonitor_excep.log", "w") as f:
                 f.write(str(ex))
 
-    '''
-    MIGRATION
-    '''
-    def migration(self):
-
-        for cont in self.conts:
-            if self.conts[cont]["policy"].lower() == "none":
-                continue
-            elif self.conts[cont]["policy"].lower() == "thresh":
-                '''
-                if throttled and below thresh
-                    size up
-                elif carbon exceeded
-                    size down
-                elif nextusage < (nextSmallerCPU / curCPU)*100
-                    size down
-                '''
-
-                cpu = self.conts[cont]["current"]["cpu"]
-                carb = self.conts[cont]["current"]["carbon"]
-                thresh = self.conts[cont]["threshold"]
-                curMach = config.MIGRATION_MACHINES[self.conts[cont]["location"]]
-                if cpu == curMach["cpu"]*100 and carb < thresh:
-                    target = nextBigger(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
-
-                elif carb > thresh:
-                    target = nextSmaller(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
-                
-                elif cpu <= (curMach["cpu"] / nextSmaller(curMach["host"]))*100:
-                    
-                    target = nextSmaller(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
-                
-                pass
-                pass
-            elif self.conts[cont]["policy"].lower() == "target":
-                '''
-                if throttled and below target
-                    size up
-                elif carbon exceeded
-                    size down
-                '''
-                cpu = self.conts[cont]["current"]["cpu"]
-                carb = self.conts[cont]["current"]["carbon"]
-                thresh = self.conts[cont]["threshold"]
-                curMach = config.MIGRATION_MACHINES[self.conts[cont]["location"]]
-                
-                if cpu == float(curMach["cpu"]*100) and carb < float(thresh):
-                    print("SIZE UP")
-                    target = nextBigger(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
-
-                elif carb > float(thresh):
-                    print("SIZE DOWN")
-                    target = nextSmaller(curMach["host"])
-                    if target:
-                        print("Migrate to " + str(target))
-                    pass
-
-                
-                pass
-
-        pass
-    def migrate_target(self,current, scale_down):
-        
-
-        if scale_down:
-            target = nextSmaller(current)
-        else:
-            target = nextBigger(current)
-
-        return target
-        
-            
-        #for m in config.MIGRATION_MACHINES:
-        #    if m["host"] in self.host:
-        #        continue
-        #    else:
-        #        if scale_down and m["cpu"] < cur_cpu  :
-        #            return m["host"]
-            
-        #        if not(scale_down) and m["cpu"] > cur_cpu:
-        #            return m["host"]
-        
-        #return "none"
-        #pass
-
-    # Migration Policy: Send to target machine
-    def migrate_send(self, contName, target):
-
-        if os.path.exists(config.WORKING_DIR + "/checkpoint_"+str(contName)):
-            os.rmdir(config.WORKING_DIR + "/checkpoint_"+str(contName))
-
-        print("Make check dir")
-        #os.mkdir(config.WORKING_DIR + "/checkpoint_"+str(contName))
-        os.mkdir("/var/lib/lxc/"+str(contName)+"/check")
-
-        print("lxc-check")
-        checkpoint = ["lxc-checkpoint", "-s", "-D", "/var/lib/lxc/"+str(contName)+"/check", "-n", contName]
-        subprocess.Popen(checkpoint).communicate()
-
-        print("Copy Container Dict")
-        copyContDir = ["cp", "-r", "/var/lib/lxc/"+str(contName), config.WORKING_DIR]
-        subprocess.Popen(copyContDir).communicate()
-
-        #print("Move Check into container dir")
-        #move = ["mv", config.WORKING_DIR + "/checkpoint_"+str(contName), config.WORKING_DIR + "/" + str(contName) ]
-        #subprocess.Popen(move).communicate()
-
-
-
-        #print("tar container fs")
-        #tarCont = ["tar", "--numeric-owner", "-czvf", str(contName)+".tar.gz", "./*"]
-        #subprocess.Popen(tarCont).communicate()
-
-        print("zip")
-        zipCont = ["zip", "-r", str(contName)+".zip", str(contName)]
-        subprocess.Popen(zipCont).communicate()
-        
-        print("scp filesystem")
-        scp = ["scp", "-i", config.SSH_KEY_PATH, str(contName) + ".zip", config.SSH_USER+"@"+target+":"+config.WORKING_DIR]
-        subprocess.Popen(scp).communicate()
-        
-        os.chdir(config.WORKING_DIR)
-
-        print("destroy old")
-        destroyOldCont = ["lxc-destroy", str(contName)]
-        subprocess.Popen(destroyOldCont).communicate()
-        rm1 = ["rm", "-r", str(contName)]
-        rm2 = ["rm", str(contName)+".zip"]
-        subprocess.Popen(rm1).communicate()
-        subprocess.Popen(rm2).communicate()
-
-        # self.conts[contName]["status"] = "remote @ " + str(target)
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect( (target, config.MIGRATION_PORT) )
-            encode = json.dumps({contName: self.conts[contName]}).encode("utf-8")
-            s.sendall(encode)
-
-
-        pass
-
-    def migrate_recv(self):
-        while True:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind( (self.host, config.MIGRATION_PORT) )
-                # print("listening")
-                s.listen(1)
-                conn, addr = s.accept()
-                with conn:
-                    data = conn.recv(2048)
-                    cont = json.loads(data.decode("utf-8"))
-
-                    name = list(cont.keys())[0]
-
-                    # print("unzip")
-                    unzip = ["unzip", config.WORKING_DIR+"/"+str(name)+".zip"]
-                    subprocess.Popen(unzip).communicate()
-
-                    # print("relocate")
-                    move = ["mv", str(name), "/var/lib/lxc"]
-                    subprocess.Popen(move).communicate()
-
-                    # print("restore")
-                    restart = ["lxc-checkpoint", "-r", "-D", "/var/lib/lxc/"+str(name)+"/check", "-n", str(name)]
-                    subprocess.Popen(restart).communicate()
-                    # self.conts[cont[""]]
-
-                    # print("cleanup")
-                    cleanup1 = ["rm", "/var/lib/lxc/"+str(name)+".zip"]
-                    cleanup2 = ["rm", "-r", "/var/lib/lxc/"+str(name)+"/check"]
-
-                    subprocess.Popen(cleanup1).communicate()
-                    subprocess.Popen(cleanup2).communicate()
-
-                    self.conts[name] = cont[name]
-
+   
         
 def run():
     while True:
